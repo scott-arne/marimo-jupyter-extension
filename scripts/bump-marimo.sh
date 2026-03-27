@@ -61,7 +61,6 @@ FILES=(
   "marimo_jupyter_extension/executable.py"
   "marimo_jupyter_extension/handlers.py"
   "README.md"
-  "CLAUDE.md"
   "docs/installation.md"
   "docs/index.md"
   "docs/jupyterhub.md"
