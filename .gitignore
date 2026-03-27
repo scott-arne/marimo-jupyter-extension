@@ -187,3 +187,7 @@ tsconfig.tsbuildinfo
 marimo_jupyter_extension/labextension/
 
 .claude/
+*.ipynb
+Untitled*
+lite/
+_output/
