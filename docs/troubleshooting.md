@@ -52,10 +52,10 @@ which jupyter
 
 **Cause**: marimo version is too old.
 
-**Solution**: Upgrade to marimo 0.19.11 or newer:
+**Solution**: Upgrade to marimo 0.21.1 or newer:
 
 ```bash
-pip install 'marimo>=0.19.11'
+pip install 'marimo>=0.21.1'
 ```
 
 ### JupyterHub Issues
