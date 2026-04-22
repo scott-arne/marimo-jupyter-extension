@@ -180,6 +180,15 @@ def _jupyter_server_extension_points():
 
 def _load_jupyter_server_extension(server_app):
     """Load the jupyter server extension."""
+    from ._proxy_patch import apply as _apply_proxy_patch
+
+    # Guard jupyter-server-proxy's SupervisedProcess against
+    # ProcessLookupError when it tries to kill a marimo child that has
+    # already exited on its own (e.g. marimo's idle --timeout). Without
+    # this patch the next request after marimo self-exits crashes the
+    # proxy with a 500 instead of respawning marimo.
+    _apply_proxy_patch()
+
     base_url = server_app.web_app.settings["base_url"]
     server_app.web_app.add_handlers(
         ".*",
