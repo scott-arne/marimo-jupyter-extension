@@ -137,6 +137,14 @@ class MarimoProxyConfig(Configurable):
     def _default_timeout(self):
         return DEFAULT_TIMEOUT
 
+    @default("idle_timeout")
+    def _default_idle_timeout(self):
+        return None
+
+    @default("session_ttl")
+    def _default_session_ttl(self):
+        return None
+
 
 @dataclass(frozen=True)
 class Config:
