@@ -7,6 +7,7 @@ marimo.
 import base64
 import os
 import secrets
+import sys
 
 from .config import get_config
 from .executable import get_marimo_command
@@ -27,8 +28,18 @@ def setup_marimoserver():
     # Get marimo command based on config
     marimo_cmd = get_marimo_command(config)
 
+    # Wrap marimo in a small reaper so descendant LSP processes are
+    # terminated when jupyter-server-proxy shuts marimo down. Without
+    # this wrapper marimo's LSP node children (spawned with
+    # start_new_session=True) are reparented to init and keep listening
+    # on ports in the 3118-3217 range, eventually exhausting marimo's
+    # port-search window. Windows is a no-op pass-through because
+    # marimo does not detach its children there.
+    reaper_cmd = [sys.executable, "-m", "marimo_jupyter_extension._reap", "--"]
+
     return {
         "command": [
+            *reaper_cmd,
             *marimo_cmd,
             *(["--log-level", "DEBUG"] if config.debug else []),
             "edit",
