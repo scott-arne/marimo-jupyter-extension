@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -136,3 +138,70 @@ class TestPatchedBehavior:
         fake = _Fake()
         with pytest.raises(RuntimeError, match="boom"):
             asyncio.run(SupervisedProcess._signal_and_wait(fake, 15))
+
+
+class TestDegradedPaths:
+    """Import and attribute failures return False and log a warning."""
+
+    def test_returns_false_when_simpervisor_not_importable(self, caplog):
+        """If ``simpervisor`` cannot be imported the patch reports failure
+        and writes a warning to the supplied logger."""
+        log = logging.getLogger("test.apply.no.simpervisor")
+        # Remove the already-imported simpervisor modules so that the fresh
+        # import inside ``apply`` re-runs and can be forced to fail.
+        saved = {
+            name: mod
+            for name, mod in list(sys.modules.items())
+            if name == "simpervisor" or name.startswith("simpervisor.")
+        }
+        for name in saved:
+            del sys.modules[name]
+        try:
+            original_import = (
+                __builtins__["__import__"]
+                if isinstance(__builtins__, dict)
+                else __builtins__.__import__
+            )
+
+            def fake_import(name, *args, **kwargs):
+                if name == "simpervisor.process" or name.startswith(
+                    "simpervisor"
+                ):
+                    raise ImportError("forced")
+                return original_import(name, *args, **kwargs)
+
+            with patch("builtins.__import__", side_effect=fake_import):
+                with caplog.at_level(logging.WARNING, logger=log.name):
+                    assert _proxy_patch.apply(log) is False
+        finally:
+            sys.modules.update(saved)
+
+        assert any(
+            "simpervisor not importable" in rec.getMessage()
+            for rec in caplog.records
+            if rec.name == log.name
+        )
+
+    def test_returns_false_when_signal_method_missing(
+        self, fresh_patch, caplog
+    ):
+        """If ``simpervisor`` renames ``_signal_and_wait`` the patch refuses
+        to install and logs a warning."""
+        log = logging.getLogger("test.apply.no.method")
+        fake_proc_module = MagicMock()
+
+        class _NoSignalSupervisedProcess:
+            pass
+
+        fake_proc_module.SupervisedProcess = _NoSignalSupervisedProcess
+        with patch.dict(
+            sys.modules, {"simpervisor.process": fake_proc_module}
+        ):
+            with caplog.at_level(logging.WARNING, logger=log.name):
+                assert _proxy_patch.apply(log) is False
+
+        assert any(
+            "_signal_and_wait not found" in rec.getMessage()
+            for rec in caplog.records
+            if rec.name == log.name
+        )
