@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -49,6 +50,45 @@ class TestApply:
             getattr(SupervisedProcess, _proxy_patch._PATCHED_ATTR, False)
             is True
         )
+
+    def test_apply_logs_success_when_logger_given(self, fresh_patch, caplog):
+        log = logging.getLogger("test.apply.success")
+        with caplog.at_level(logging.INFO, logger=log.name):
+            _proxy_patch.apply(log)
+        assert any(
+            "guard installed" in rec.getMessage()
+            for rec in caplog.records
+            if rec.name == log.name
+        )
+
+    def test_apply_is_quiet_on_second_call(self, fresh_patch, caplog):
+        log = logging.getLogger("test.apply.idempotent")
+        _proxy_patch.apply(log)
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger=log.name):
+            _proxy_patch.apply(log)
+        assert not [rec for rec in caplog.records if rec.name == log.name]
+
+    def test_missing_attributes_degrade_gracefully(self, fresh_patch):
+        """If simpervisor renames ``_killed`` / ``running``, the wrapper
+        must not create phantom attributes — it must swallow the lookup
+        error silently."""
+
+        async def raising(self, signum):  # noqa: ARG001
+            raise ProcessLookupError()
+
+        SupervisedProcess._signal_and_wait = raising
+        _proxy_patch.apply()
+
+        class Bare:
+            pass
+
+        bare = Bare()
+        result = asyncio.run(SupervisedProcess._signal_and_wait(bare, 15))
+
+        assert result is None
+        assert not hasattr(bare, "_killed")
+        assert not hasattr(bare, "running")
 
 
 class TestPatchedBehavior:

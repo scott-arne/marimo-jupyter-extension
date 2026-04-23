@@ -18,19 +18,34 @@ success. The monkey-patch is idempotent and is applied from
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 _PATCHED_ATTR = "_marimo_jupyter_extension_patched"
 
+_SILENT_LOG = logging.getLogger(__name__)
 
-def apply() -> bool:
+
+def apply(log: Any = None) -> bool:
     """Install the ``send_signal`` guard on ``SupervisedProcess``.
 
+    :param log: Optional logger (``logging.Logger`` or Traitlets logger)
+        used to report patch status. If omitted, a module-level logger
+        is used so failures are still recorded somewhere.
     :returns: True if the patch was applied (or was already applied);
         False if ``simpervisor`` could not be imported or the expected
         method is missing (e.g. an incompatible future version).
     """
+    log = log if log is not None else _SILENT_LOG
+
     try:
         from simpervisor.process import SupervisedProcess
     except ImportError:
+        log.warning(
+            "marimo-jupyter-extension: simpervisor not importable; "
+            "SupervisedProcess ProcessLookupError guard NOT installed. "
+            "Marimo respawn after idle-exit may return 500 errors."
+        )
         return False
 
     if getattr(SupervisedProcess, _PATCHED_ATTR, False):
@@ -38,6 +53,11 @@ def apply() -> bool:
 
     original = getattr(SupervisedProcess, "_signal_and_wait", None)
     if original is None:
+        log.warning(
+            "marimo-jupyter-extension: "
+            "simpervisor.SupervisedProcess._signal_and_wait not found "
+            "(incompatible simpervisor version?); guard NOT installed."
+        )
         return False
 
     async def _signal_and_wait(self, signum):
@@ -47,10 +67,19 @@ def apply() -> bool:
             # The child was already reaped. Mark the supervised process as
             # killed so subsequent terminate()/kill() calls don't raise
             # KilledProcessError from a stale handle, and return cleanly.
-            self._killed = True
-            self.running = False
+            # Guard the attribute writes so that a future simpervisor
+            # refactor that renames these fields degrades to a warning
+            # rather than creating phantom attributes.
+            if hasattr(self, "_killed"):
+                self._killed = True
+            if hasattr(self, "running"):
+                self.running = False
             return None
 
     SupervisedProcess._signal_and_wait = _signal_and_wait
     setattr(SupervisedProcess, _PATCHED_ATTR, True)
+    log.info(
+        "marimo-jupyter-extension: "
+        "SupervisedProcess ProcessLookupError guard installed."
+    )
     return True

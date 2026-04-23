@@ -142,6 +142,55 @@ class TestDescendantReap:
                 except (OSError, ValueError):
                     pass
 
+    def test_late_spawned_grandchild_is_reaped(self, tmp_path: Path):
+        """A grandchild spawned *after* SIGTERM arrives (during shutdown)
+        must still be killed by the second-pass re-enumeration."""
+        marker = tmp_path / "late_grandchild.pid"
+        script = textwrap.dedent(
+            f"""
+            import os, signal, subprocess, sys, time
+
+            def spawn_on_term(signum, frame):
+                gc = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(300)"],
+                    start_new_session=True,
+                )
+                open({str(marker)!r}, "w").write(str(gc.pid))
+                # Give the reaper's second pass time to see us.
+                time.sleep(2.0)
+                sys.exit(0)
+
+            signal.signal(signal.SIGTERM, spawn_on_term)
+            time.sleep(300)
+            """
+        )
+
+        proc = subprocess.Popen(
+            [sys.executable, "-m", REAP, "--", sys.executable, "-c", script]
+        )
+        try:
+            time.sleep(0.5)
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=15)
+
+            assert _wait_until(marker.exists, timeout=5), (
+                "late grandchild never started"
+            )
+            gc_pid = int(marker.read_text().strip())
+
+            assert _wait_until(lambda: not _pid_alive(gc_pid), timeout=10), (
+                f"late grandchild pid={gc_pid} still alive after reaper exit"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            if marker.exists():
+                try:
+                    os.kill(int(marker.read_text().strip()), signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+
     def test_clean_exit_does_not_emit_error(self):
         """If the wrapped command exits on its own, the wrapper returns 0."""
         result = subprocess.run(

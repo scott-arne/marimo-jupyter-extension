@@ -16,8 +16,9 @@ This wrapper is spliced in front of the marimo command by
 
 On SIGTERM / SIGINT / SIGHUP the wrapper enumerates the descendant tree
 *before* signaling (so LSPs still show up as descendants rather than
-orphans), SIGTERMs all of them, gives a short grace period, then
-SIGKILLs any stragglers.
+orphans), SIGTERMs all of them, re-enumerates once to catch anything that
+forked during shutdown, gives a short grace period, then SIGKILLs any
+stragglers.
 
 On Windows the wrapper is a plain pass-through: marimo does not detach its
 children on Windows (``start_new_session=not is_windows()``), so there is no
@@ -36,24 +37,47 @@ _GRACE_SECONDS = 5.0
 _POLL_INTERVAL = 0.1
 
 
+def _log(msg: str) -> None:
+    """Write a single line to stderr (the reaper has no logger)."""
+    try:
+        sys.stderr.write(f"marimo-jupyter-extension reaper: {msg}\n")
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+
 def _ps_parent_map() -> dict[int, int]:
     """Return a {pid: ppid} map for every process visible to ``ps``.
 
     :returns: Mapping from PID to parent PID. Empty if ``ps`` cannot be
-        executed for any reason.
+        executed for any reason; a warning is written to stderr so that a
+        deployment with a broken ``ps`` is visible instead of silently
+        falling back to direct-child-only reaping.
     """
     try:
-        out = subprocess.run(
+        result = subprocess.run(
             ["ps", "-axo", "pid=,ppid="],
             capture_output=True,
             text=True,
             check=False,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log(
+            f"'ps' invocation failed ({exc!r}); descendant reap degraded "
+            "to direct-child-only. Orphan LSPs may leak."
+        )
+        return {}
+
+    if result.returncode != 0 or not result.stdout:
+        _log(
+            f"'ps -axo pid=,ppid=' returned rc={result.returncode}; "
+            "descendant reap degraded to direct-child-only. "
+            "Orphan LSPs may leak."
+        )
         return {}
 
     mapping: dict[int, int] = {}
-    for line in out.splitlines():
+    for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) != 2:
             continue
@@ -108,8 +132,11 @@ def _send(pid: int, sig: int) -> None:
 def _terminate_tree(root_pid: int, child_pid: int) -> None:
     """Gracefully terminate ``child_pid`` and every descendant of ``root_pid``.
 
-    Snapshots the descendant set first so that children which become orphans
-    (reparented to PID 1) as their immediate parent dies are still reached.
+    Snapshots the descendant set, SIGTERMs it, then re-enumerates once to
+    catch any process that forked between the original snapshot and the
+    first SIGTERM pass (e.g. a late LSP that marimo was still spawning
+    when shutdown began). Any processes that survive the grace window
+    are SIGKILLed.
 
     :param root_pid: PID of this wrapper; used as the descendant tree root.
     :param child_pid: PID of the direct marimo child, explicitly included in
@@ -118,6 +145,15 @@ def _terminate_tree(root_pid: int, child_pid: int) -> None:
     targets = _descendants(root_pid) | {child_pid}
     for pid in targets:
         _send(pid, signal.SIGTERM)
+
+    # Second pass: re-enumerate and SIGTERM anything we missed. Processes
+    # forked during shutdown (or reparented to PID 1 as their immediate
+    # parent died) would otherwise escape the first pass.
+    late_targets = _descendants(root_pid) - targets
+    if late_targets:
+        for pid in late_targets:
+            _send(pid, signal.SIGTERM)
+        targets |= late_targets
 
     deadline = time.monotonic() + _GRACE_SECONDS
     while time.monotonic() < deadline:

@@ -187,7 +187,7 @@ def _load_jupyter_server_extension(server_app):
     # already exited on its own (e.g. marimo's idle --timeout). Without
     # this patch the next request after marimo self-exits crashes the
     # proxy with a 500 instead of respawning marimo.
-    _apply_proxy_patch()
+    _apply_proxy_patch(server_app.log)
 
     base_url = server_app.web_app.settings["base_url"]
     server_app.web_app.add_handlers(
